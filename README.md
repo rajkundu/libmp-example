@@ -10,6 +10,9 @@
 - Other MP example graphs should be supported, though they I haven't yet tested them. As described below, any of MediaPipe's many Protobuf-based data types should work with LibMP.
 - Tested on Windows (MSVC 17.3.5) and Ubuntu 20.04 (GCC 9.4.0)
 
+## Prerequisites
+1. Clone and build [LibMP](https://github.com/rajkundu/mediapipe)
+
 ## Usage
 1. Compile using CMake
 2. `cd` into output directory containing `main` binary
