@@ -9,6 +9,9 @@ set_property(TARGET main PROPERTY CXX_STANDARD_REQUIRED ON)
 
 # Link MediaPipe Shared Lib
 set(MEDIAPIPE_DIR "C:/Users/rk274/code/mediapipe")
+if(NOT EXISTS "${MEDIAPIPE_DIR}")
+	message(FATAL_ERROR "Mediapipe directory '${MEDIAPIPE_DIR}' not found!")
+endif()
 set(LIBMP_TARGET_NAME "libmp")
 set(LIBMP_SOURCE_DIR "${MEDIAPIPE_DIR}/mediapipe/examples/desktop/${LIBMP_TARGET_NAME}")
 set(LIBMP_BIN_DIR "${MEDIAPIPE_DIR}/bazel-bin/mediapipe/examples/desktop/${LIBMP_TARGET_NAME}")
