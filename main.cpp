@@ -91,20 +91,20 @@ int main(int argc, char* argv[]){
 
 	face_mesh->AddOutputStream("output_video");
 	face_mesh->AddOutputStream("multi_face_landmarks");
-    face_mesh->Start();
+	face_mesh->Start();
 
 	// Read in input image
 	std::string img_path("input.jpg");
 	int img_width, img_height, img_channels;
-    uint8_t* img = stbi_load(img_path.c_str(), &img_width, &img_height, &img_channels, 0);
-    if (img == nullptr){
-        std::cerr << "Error loading image file '" << img_path << "'" << std::endl;
-        return -1;
-    }
+	uint8_t* img = stbi_load(img_path.c_str(), &img_width, &img_height, &img_channels, 0);
+	if (img == nullptr){
+		std::cerr << "Error loading image file '" << img_path << "'" << std::endl;
+		return -1;
+	}
 	std::cout << "Input image: " << img_path << std::endl;
-    std::cout << "\tw:\t" << img_width << std::endl;
-    std::cout << "\th:\t" << img_height << std::endl;
-    std::cout << "\tc:\t" << img_channels << std::endl;
+	std::cout << "\tw:\t" << img_width << std::endl;
+	std::cout << "\th:\t" << img_height << std::endl;
+	std::cout << "\tc:\t" << img_channels << std::endl;
 
 	// Feed input image into graph
 	if(!face_mesh->Process(img, img_width, img_height)){
