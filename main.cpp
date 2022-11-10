@@ -9,6 +9,7 @@
 // Compiled protobuf headers for MediaPipe types used
 // (only landmark.pb.h is needed for this particular example)
 #include "mediapipe/framework/formats/landmark.pb.h"
+#include "mediapipe/framework/formats/image_format.pb.h"
 
 // single-header libraries for simple image I/O
 #define STB_IMAGE_IMPLEMENTATION
@@ -106,41 +107,34 @@ int main(int argc, char* argv[]){
 	std::cout << "\th:\t" << img_height << std::endl;
 	std::cout << "\tc:\t" << img_channels << std::endl;
 
-	// Feed input image into graph
-	if(!face_mesh->Process(img, img_width, img_height)){
+	// Create image and feed into graph
+	auto t0 = std::chrono::high_resolution_clock::now();
+	// img is COPIED by Process()
+	if(!face_mesh->Process(img, img_width, img_height, mediapipe::ImageFormat::SRGB)){
 		std::cerr << "Process() failed!" << std::endl;
 		return 1;
 	}
-
-	// ----- MP Output Image ----- //
-
-	// Get output image packet
-	const void* img_packet = face_mesh->GetOutputPacket("output_video");
-
-	// Get output image size, create copy buffer, and fill it
-	size_t imgsize = mediapipe::LibMP::GetOutputImageSize(img_packet);
-	std::shared_ptr<uint8_t[]> mp_out(new uint8_t[imgsize]);
-	if(!mediapipe::LibMP::WriteOutputImage(mp_out.get(), img_packet)){
-		std::cerr << "WriteOutputImage failed!" << std::endl;
-		return 1;
-	}
-
-	// Write MP output image to disk
-	stbi_write_jpg("mp_output.jpg", img_width, img_height, img_channels, mp_out.get(), 100);
-	std::cout << "Wrote MP output image to disk" << std::endl;
-
+	// Wait until graph is done
+	face_mesh->WaitUntilIdle();
+	
 	// ----- MP Landmarks ----- //
 
-	// Get MP landmark packet
+	size_t num_faces = 0;
+	std::unique_ptr<const void, decltype(&mediapipe::LibMP::DeletePacket)> lm_packet_ptr(nullptr, mediapipe::LibMP::DeletePacket);
+	if (face_mesh->GetOutputQueueSize("multi_face_landmarks") > 0){
+		lm_packet_ptr.reset(face_mesh->GetOutputPacket("multi_face_landmarks")); // set lm_packet_ptr to the available packet
+		num_faces = mediapipe::LibMP::GetPacketProtoMsgVecSize(lm_packet_ptr.get());
+	}
+	auto t1 = std::chrono::high_resolution_clock::now();
+	std::cout << "Detected " << num_faces << " faces in " << std::chrono::duration_cast<std::chrono::milliseconds>(t1-t0).count() << " ms" << std::endl;
+
 	std::vector<mediapipe::NormalizedLandmarkList> lm_vec;
-	const void* lm_packet = face_mesh->GetOutputPacket("multi_face_landmarks");
-	size_t num_faces = mediapipe::LibMP::GetProtoMsgVecSize(lm_packet);
 
 	// Create multi_face_landmarks from packet's protobuf data
 	std::vector<mediapipe::NormalizedLandmarkList> multi_face_landmarks;
 	for (int face_num = 0; face_num < num_faces; face_num++){
 		// Get reference to protobuf message for face
-		const void* lm_list_proto = mediapipe::LibMP::GetPacketProtoMsgAt(lm_packet, face_num);
+		const void* lm_list_proto = mediapipe::LibMP::GetPacketProtoMsgAt(lm_packet_ptr.get(), face_num);
 		// Get byte size of protobuf message
 		size_t lm_list_proto_size = mediapipe::LibMP::GetProtoMsgByteSize(lm_list_proto);
 
@@ -194,8 +188,27 @@ int main(int argc, char* argv[]){
 	}
 
 	// Write image with manual drawing to disk
-	stbi_write_jpg("manual_output.jpg", img_width, img_height, img_channels, buffer, 100);
+	stbi_write_jpg("manual_output.jpg", img_width, img_height, img_channels, img, 100);
 	std::cout << "Wrote manual output image to disk" << std::endl;
+
+	// ----- MP Output Image ----- //
+
+	// Get output image packet
+	const void* img_packet = face_mesh->GetOutputPacket("output_video");
+
+	// Get output image size, create copy buffer, and fill it
+	size_t imgsize = mediapipe::LibMP::GetOutputImageSize(img_packet);
+	std::shared_ptr<uint8_t[]> mp_out(new uint8_t[imgsize]);
+	if(!mediapipe::LibMP::WriteOutputImage(mp_out.get(), img_packet)){
+		std::cerr << "WriteOutputImage failed!" << std::endl;
+		return 1;
+	}
+
+	// Write MP output image to disk
+	stbi_write_jpg("mp_output.jpg", img_width, img_height, img_channels, mp_out.get(), 100);
+	std::cout << "Wrote MP output image to disk" << std::endl;
+
+	// ----- End ----- //
 
 	// Wait for user to press enter to end program
 	std::string s;
