@@ -2,21 +2,19 @@ cmake_minimum_required(VERSION 3.7 FATAL_ERROR)
 set(CMAKE_CXX_STANDARD 17)
 project(libmp-example)
 
-# Main executables
-add_executable(main main.cpp)
-set_property(TARGET main PROPERTY CXX_STANDARD 17)
-set_property(TARGET main PROPERTY CXX_STANDARD_REQUIRED ON)
-
 # Link MediaPipe Shared Lib
 set(MEDIAPIPE_DIR "C:/Users/rk274/code/mediapipe")
 if(NOT EXISTS "${MEDIAPIPE_DIR}")
 	message(FATAL_ERROR "Mediapipe directory '${MEDIAPIPE_DIR}' not found!")
 endif()
+get_filename_component(MEDIAPIPE_DIRNAME "${MEDIAPIPE_DIR}" NAME)
+
+# LibMP
 set(LIBMP_TARGET_NAME "libmp")
 set(LIBMP_SOURCE_DIR "${MEDIAPIPE_DIR}/mediapipe/examples/desktop/${LIBMP_TARGET_NAME}")
 set(LIBMP_BIN_DIR "${MEDIAPIPE_DIR}/bazel-bin/mediapipe/examples/desktop/${LIBMP_TARGET_NAME}")
 add_library(LIBMP SHARED IMPORTED)
-IF(WIN32)
+if(${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
 	set(LIBMP_SHARED_LIBRARY "${LIBMP_BIN_DIR}/${LIBMP_TARGET_NAME}.dll")
 	set(LIBMP_IMPORT_LIB "${LIBMP_BIN_DIR}/${LIBMP_TARGET_NAME}.dll.if.lib")
 	set_target_properties(LIBMP PROPERTIES
@@ -24,18 +22,16 @@ IF(WIN32)
 		IMPORTED_IMPLIB "${LIBMP_IMPORT_LIB}"
     	INTERFACE_INCLUDE_DIRECTORIES "${LIBMP_SOURCE_DIR}"
 	)
-ELSEIF(UNIX)
+elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
 	set(LIBMP_SHARED_LIBRARY "${LIBMP_BIN_DIR}/${LIBMP_TARGET_NAME}.so")
 	set_target_properties(LIBMP PROPERTIES
     	IMPORTED_LOCATION "${LIBMP_SHARED_LIBRARY}"
     	INTERFACE_INCLUDE_DIRECTORIES "${LIBMP_SOURCE_DIR}"
 	)
-ENDIF()
-target_link_libraries(main LIBMP)
+endif()
 
 # Protobuf
-# may have to set protobuf_source_dir manually if bazel's workspace output dir is atypical
-get_filename_component(MEDIAPIPE_DIRNAME "${MEDIAPIPE_DIR}" NAME)
+# use Protobuf bundled with LibMP
 set(protobuf_source_dir "${MEDIAPIPE_DIR}/bazel-${MEDIAPIPE_DIRNAME}/external/com_google_protobuf")
 include("${CMAKE_CURRENT_SOURCE_DIR}/libprotobuf.cmake")
 
@@ -48,7 +44,24 @@ endif(MSVC)
 add_library(MP_FORMATS STATIC ${MP_FORMATS_SRC})
 target_include_directories(MP_FORMATS PUBLIC "${MEDIAPIPE_DIR}/bazel-bin")
 target_link_libraries(MP_FORMATS libprotobuf)
+
+# OpenCV
+# use OpenCV bundled with LibMP
+if(${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
+	set(LibMP_OpenCV_DIR "${MEDIAPIPE_DIR}/bazel-${MEDIAPIPE_DIRNAME}/external/windows_opencv")
+elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
+	set(LibMP_OpenCV_DIR "${MEDIAPIPE_DIR}/bazel-${MEDIAPIPE_DIRNAME}/external/linux_opencv")
+endif()
+set(OpenCV_DIR "${LibMP_OpenCV_DIR}") # use OpenCV bundled with LibMP
+find_package(OpenCV REQUIRED)
+
+# Main executable
+add_executable(main main.cpp)
+set_property(TARGET main PROPERTY CXX_STANDARD 17)
+set_property(TARGET main PROPERTY CXX_STANDARD_REQUIRED ON)
+target_link_libraries(main LIBMP)
 target_link_libraries(main MP_FORMATS)
+target_link_libraries(main ${OpenCV_LIBS})
 
 ### Post-build copies ###
 # LibMP - MediaPipe Shared Library
@@ -70,11 +83,6 @@ add_custom_command(TARGET main POST_BUILD
 IF(WIN32)
 	add_custom_command(TARGET main POST_BUILD
 		COMMAND ${CMAKE_COMMAND} -E copy "${LIBMP_BIN_DIR}/opencv_world460.dll" "$<TARGET_FILE_DIR:main>"
-		COMMENT "Copying OpenCV DLL"
+		COMMENT "Copying OpenCV DLL (Release)"
 	)
 ENDIF()
-# Input image
-add_custom_command(TARGET main POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/input.jpg" "$<TARGET_FILE_DIR:main>/input.jpg"
-    COMMENT "Copying input JPG"
-)

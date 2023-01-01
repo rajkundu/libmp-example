@@ -1,14 +1,16 @@
 # LibMP Example Usage Application
 
 - See [LibMP - MediaPipe as a Shared Library](https://github.com/rajkundu/mediapipe) for more information on LibMP
-- This example application reads an input image, runs MediaPipe Face Mesh on it, and:
-    1. Gets the rendered MediaPipe output image with MediaPipe's annotations drawn on it (writes image to `mp_output.jpg`)
-    2. Retrieves the raw face landmark coordinates and uses them to manually annotate the image (writes image to `manual_output.jpg`)
-- Images are read from/written to disk using the single-header STB Image libraries
+- This example application does the following in realtime:
+  1. Streams video frames from an attached camera/webcam (OpenCV Device #0)
+  2. Runs MediaPipe Face Mesh on each frame
+  3. Uses LibMP to get the XYZ coordinates of detected landmarks
+  4. Draws a circle at each landmark's location on the input frame
+  5. Displays the result using OpenCV/HighGUI
 - Compilation is managed using CMake - see [`CMakeLists.txt`](/CMakeLists.txt) and [`libprotobuf.cmake`](/libprotobuf.cmake)
     - Change `${MEDIAPIPE_DIR}` in `CMakeLists.txt` to match your installation of LibMP
 - Other MP example graphs should be supported, though they I haven't yet tested them. As described below, any of MediaPipe's many Protobuf-based data types should work with LibMP.
-- Tested on Windows (MSVC 17.3.5) and Ubuntu 20.04 (GCC 9.4.0)
+- Tested on Windows (MSVC 17.3.5)
 
 ## Prerequisites
 1. Clone and build [LibMP](https://github.com/rajkundu/mediapipe)

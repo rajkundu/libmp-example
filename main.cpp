@@ -1,26 +1,79 @@
 #include <iostream>
+#include <string>
 #include <chrono>
 #include <memory>
 #include <array>
+#include <vector>
 
-// MediaPipe LibMP Header
+// LibMP Header
 #include "libmp.h"
 
 // Compiled protobuf headers for MediaPipe types used
-// (only landmark.pb.h is needed for this particular example)
 #include "mediapipe/framework/formats/landmark.pb.h"
 #include "mediapipe/framework/formats/image_format.pb.h"
 
-// single-header libraries for simple image I/O
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
+// OpenCV
+#include <opencv2/opencv.hpp>
 
-int main(int argc, char* argv[]){
+////////////////////////////////////////
+//           Helper Function          //
+////////////////////////////////////////
+
+// returns landmark XYZ data for all detected faces (or empty vector if no detections)
+// dimensions = (# faces) x (# landmarks/face) x 3
+// i.e., each landmark is a 3-float array (X,Y,Z), so the middle vector contains 468 or 478 of these
+// and the outermost vector is for each detected face in the frame
+static std::vector<std::vector<std::array<float, 3>>> get_landmarks(const std::shared_ptr<mediapipe::LibMP>& face_mesh) {
+	std::vector<std::vector<std::array<float, 3>>> normalized_landmarks;
+
+	// I use a unique_ptr for convenience, so that DeletePacket is called automatically
+	// You could also manage deletion yourself, manually:
+	// const void* packet = face_mesh->GetOutputPacket("multi_face_landmarks");
+	// mediapipe::LibMP::DeletePacket(packet);
+	std::unique_ptr<const void, decltype(&mediapipe::LibMP::DeletePacket)> lm_packet_ptr(nullptr, mediapipe::LibMP::DeletePacket);
+
+	// Keep getting packets from queue until empty
+	while (face_mesh->GetOutputQueueSize("multi_face_landmarks") > 0) {
+		lm_packet_ptr.reset(face_mesh->GetOutputPacket("multi_face_landmarks"));
+	}
+	if (lm_packet_ptr.get() == nullptr || mediapipe::LibMP::PacketIsEmpty(lm_packet_ptr.get())) {
+		return normalized_landmarks; // return empty vector if no output packets or packet is invalid
+	}
+
+	// Create multi_face_landmarks from packet's protobuf data
+	size_t num_faces = mediapipe::LibMP::GetPacketProtoMsgVecSize(lm_packet_ptr.get());
+	for (int face_num = 0; face_num < num_faces; face_num++) {
+		// Get reference to protobuf message for face
+		const void* lm_list_proto = mediapipe::LibMP::GetPacketProtoMsgAt(lm_packet_ptr.get(), face_num);
+		// Get byte size of protobuf message
+		size_t lm_list_proto_size = mediapipe::LibMP::GetProtoMsgByteSize(lm_list_proto);
+
+		// Create buffer to hold protobuf message data; copy data to buffer
+		std::shared_ptr<uint8_t[]> proto_data(new uint8_t[lm_list_proto_size]);
+		mediapipe::LibMP::WriteProtoMsgData(proto_data.get(), lm_list_proto, static_cast<int>(lm_list_proto_size));
+
+		// Initialize a mediapipe::NormalizedLandmarkList object from the buffer
+		mediapipe::NormalizedLandmarkList face_landmarks;
+		face_landmarks.ParseFromArray(proto_data.get(), static_cast<int>(lm_list_proto_size));
+
+		// Copy the landmark data to our custom data structure
+		normalized_landmarks.emplace_back();
+		for (const mediapipe::NormalizedLandmark& lm : face_landmarks.landmark()) {
+			normalized_landmarks[face_num].push_back({ lm.x(), lm.y(), lm.z() });
+		}
+	}
+
+	return normalized_landmarks;
+}
+
+////////////////////////////////////////
+//            Main Function           //
+////////////////////////////////////////
+
+int main(int argc, char* argv[]) {
+	// adapted from https://github.com/google/mediapipe/blob/master/mediapipe/graphs/face_mesh/face_mesh_desktop_live.pbtxt
+	// runs face mesh for up to 1 face with both attention and previous landmark usage enabled
 	const char* graph = R"(
-		# from https://github.com/google/mediapipe/blob/master/mediapipe/graphs/face_mesh/face_mesh_desktop_live.pbtxt
-
 		# MediaPipe graph that performs face mesh with TensorFlow Lite on CPU.
 
 		# Input image. (ImageFrame)
@@ -57,10 +110,12 @@ int main(int argc, char* argv[]){
 		node {
 			calculator: "ConstantSidePacketCalculator"
 			output_side_packet: "PACKET:0:num_faces"
-			output_side_packet: "PACKET:1:with_attention"
+			output_side_packet: "PACKET:1:use_prev_landmarks"
+			output_side_packet: "PACKET:2:with_attention"
 			node_options: {
 				[type.googleapis.com/mediapipe.ConstantSidePacketCalculatorOptions]: {
 					packet { int_value: 1 }
+					packet { bool_value: true }
 					packet { bool_value: true }
 				}
 			}
@@ -70,6 +125,7 @@ int main(int argc, char* argv[]){
 			calculator: "FaceLandmarkFrontCpu"
 			input_stream: "IMAGE:throttled_input_video"
 			input_side_packet: "NUM_FACES:num_faces"
+			input_side_packet: "USE_PREV_LANDMARKS:use_prev_landmarks"
 			input_side_packet: "WITH_ATTENTION:with_attention"
 			output_stream: "LANDMARKS:multi_face_landmarks"
 			output_stream: "ROIS_FROM_LANDMARKS:face_rects_from_landmarks"
@@ -87,133 +143,73 @@ int main(int argc, char* argv[]){
 		}
 	)";
 
-	// Create mp face mesh
+	// Create MP face mesh graph
 	std::shared_ptr<mediapipe::LibMP> face_mesh(mediapipe::LibMP::Create(graph, "input_video"));
 
-	face_mesh->AddOutputStream("output_video");
+	// MP-rendered output stream of FaceRendererCpu subgraph
+	// NOTE: only enable if needed; otherwise, output image packets will queue up & consume memory
+	// face_mesh->AddOutputStream("output_video");
+
+	// Landmark XYZ data output stream
 	face_mesh->AddOutputStream("multi_face_landmarks");
+
+	// Start MP graph
 	face_mesh->Start();
 
-	// Read in input image
-	std::string img_path("input.jpg");
-	int img_width, img_height, img_channels;
-	uint8_t* img = stbi_load(img_path.c_str(), &img_width, &img_height, &img_channels, 0);
-	if (img == nullptr){
-		std::cerr << "Error loading image file '" << img_path << "'" << std::endl;
-		return -1;
-	}
-	std::cout << "Input image: " << img_path << std::endl;
-	std::cout << "\tw:\t" << img_width << std::endl;
-	std::cout << "\th:\t" << img_height << std::endl;
-	std::cout << "\tc:\t" << img_channels << std::endl;
-
-	// Create image and feed into graph
-	auto t0 = std::chrono::high_resolution_clock::now();
-	// img is COPIED by Process()
-	if(!face_mesh->Process(img, img_width, img_height, mediapipe::ImageFormat::SRGB)){
-		std::cerr << "Process() failed!" << std::endl;
-		return 1;
-	}
-	// Wait until graph is done
-	face_mesh->WaitUntilIdle();
-	
-	// ----- MP Landmarks ----- //
-
-	size_t num_faces = 0;
-	std::unique_ptr<const void, decltype(&mediapipe::LibMP::DeletePacket)> lm_packet_ptr(nullptr, mediapipe::LibMP::DeletePacket);
-	if (face_mesh->GetOutputQueueSize("multi_face_landmarks") > 0){
-		lm_packet_ptr.reset(face_mesh->GetOutputPacket("multi_face_landmarks")); // set lm_packet_ptr to the available packet
-		num_faces = mediapipe::LibMP::GetPacketProtoMsgVecSize(lm_packet_ptr.get());
-	}
-	auto t1 = std::chrono::high_resolution_clock::now();
-	std::cout << "Detected " << num_faces << " faces in " << std::chrono::duration_cast<std::chrono::milliseconds>(t1-t0).count() << " ms" << std::endl;
-
-	std::vector<mediapipe::NormalizedLandmarkList> lm_vec;
-
-	// Create multi_face_landmarks from packet's protobuf data
-	std::vector<mediapipe::NormalizedLandmarkList> multi_face_landmarks;
-	for (int face_num = 0; face_num < num_faces; face_num++){
-		// Get reference to protobuf message for face
-		const void* lm_list_proto = mediapipe::LibMP::GetPacketProtoMsgAt(lm_packet_ptr.get(), face_num);
-		// Get byte size of protobuf message
-		size_t lm_list_proto_size = mediapipe::LibMP::GetProtoMsgByteSize(lm_list_proto);
-
-		// Create buffer to hold protobuf message data; copy data to buffer
-		std::shared_ptr<uint8_t[]> proto_data(new uint8_t[lm_list_proto_size]);
-		mediapipe::LibMP::WriteProtoMsgData(proto_data.get(), lm_list_proto, static_cast<int>(lm_list_proto_size));
-
-		// Initialize a mediapipe::NormalizedLandmarkList object from the buffer
-		multi_face_landmarks.emplace_back();
-		multi_face_landmarks[face_num].ParseFromArray(proto_data.get(), static_cast<int>(lm_list_proto_size));
+	// Stream from webcam (device #0)
+	cv::VideoCapture cap(0);
+	if (!cap.isOpened()) {
+		std::cerr << "Could not open device #0. Is a camera/webcam attached?" << std::endl;
+		return EXIT_FAILURE;
 	}
 
-	// Create vector of vectors of arrays for landmarks
-	// dimensions = [face_num][landmark_num][x/y/z]
-	// e.g. normalized_landmarks[0][37][1] = face 0 -> landmark 37 -> y-value
-	std::vector<std::vector<std::array<float, 3>>> normalized_landmarks;
-	for (int face_num = 0; face_num < num_faces; face_num++){
-		normalized_landmarks.emplace_back();
-		for (const mediapipe::NormalizedLandmark& lm : multi_face_landmarks[face_num].landmark()){
-			normalized_landmarks[face_num].push_back({lm.x(), lm.y(), lm.z()});
+	cv::Mat frame_bgr;
+	while (cap.read(frame_bgr)) {
+		// Convert frame from BGR to RGB
+		cv::Mat frame_rgb;
+		cv::cvtColor(frame_bgr, frame_rgb, cv::COLOR_BGR2RGB);
+
+		// Start inference clock
+		auto t0 = std::chrono::high_resolution_clock::now();
+
+		// Feed RGB frame into MP face mesh graph (image data is COPIED internally by LibMP)
+		if (!face_mesh->Process(frame_rgb.data, frame_rgb.cols, frame_rgb.rows, mediapipe::ImageFormat::SRGB)) {
+			std::cerr << "Process() failed!" << std::endl;
+			break;
 		}
-	}
+		face_mesh->WaitUntilIdle();
 
-	// Manually iterate over landmarks and draw them on the image as green squares
-	int square_size = 4;
-	uint8_t* buffer = img;
-	for (int face_num = 0; face_num < num_faces; face_num++){
-		for (const std::array<float, 3>& norm_xyz : normalized_landmarks[face_num]){
-			int x = static_cast<int>(norm_xyz[0] * img_width);
-			int y = static_cast<int>(norm_xyz[1] * img_height);
-			int x1 = x - square_size / 2;
-			int x2 = x + (square_size + 1) / 2;
-			int y1 = y - square_size / 2;
-			int y2 = y + (square_size + 1) / 2;
+		// Stop inference clock
+		auto t1 = std::chrono::high_resolution_clock::now();
+		int inference_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1-t0).count();
 
-			// Clamp x1, y1, x2, y2 to image bounds
-			x1 = x1 < 0 ? 0 : x1;
-			y1 = y1 < 0 ? 0 : y1;
-			x2 = x2 > img_width ? img_width : x2;
-			y2 = y2 > img_height ? img_height : y2;
+		// Get landmark coordinates in custom data structure using helper function (see above)
+		std::vector<std::vector<std::array<float, 3>>> normalized_landmarks = get_landmarks(face_mesh);
 
-			for (int v = y1; v < y2; v++){
-				for (int u = x1; u < x2; u++){
-					unsigned int idx = img_channels * (v * img_width + u);
-					buffer[idx+0] = 0; // Red
-					buffer[idx+1] = 255; // Green
-					buffer[idx+2] = 0; // Blue
-				}
+		// For each face, draw a circle at each landmark's position
+		size_t num_faces = normalized_landmarks.size();
+		for (int face_num = 0; face_num < num_faces; face_num++) {
+			for (const std::array<float, 3>& norm_xyz : normalized_landmarks[face_num]) {
+				int x = static_cast<int>(norm_xyz[0] * frame_bgr.cols);
+				int y = static_cast<int>(norm_xyz[1] * frame_bgr.rows);
+				cv::circle(frame_bgr, cv::Point(x, y), 1, cv::Scalar(0, 255, 0), -1);
 			}
 		}
+
+		// Write some info on frame
+		cv::putText(frame_bgr, "Press any key to exit", cv::Point(10, 20), cv::FONT_HERSHEY_PLAIN, 1.0, cv::Scalar(0, 255, 0));
+		cv::putText(frame_bgr, "# Faces Detected: " + std::to_string(num_faces), cv::Point(10, 40), cv::FONT_HERSHEY_PLAIN, 1.0, cv::Scalar(0, 255, 0));
+		cv::putText(frame_bgr, "Inference time: " + std::to_string(inference_time_ms) + " ms", cv::Point(10, 60), cv::FONT_HERSHEY_PLAIN, 1.0, cv::Scalar(0, 255, 0));
+
+		// Display frame
+		cv::imshow("LibMP Example", frame_bgr);
+
+		// Close on any keypress
+		if (cv::waitKey(1) >= 0) {
+			break;
+		}
 	}
 
-	// Write image with manual drawing to disk
-	stbi_write_jpg("manual_output.jpg", img_width, img_height, img_channels, img, 100);
-	std::cout << "Wrote manual output image to disk" << std::endl;
-
-	// ----- MP Output Image ----- //
-
-	// Get output image packet
-	const void* img_packet = face_mesh->GetOutputPacket("output_video");
-
-	// Get output image size, create copy buffer, and fill it
-	size_t imgsize = mediapipe::LibMP::GetOutputImageSize(img_packet);
-	std::shared_ptr<uint8_t[]> mp_out(new uint8_t[imgsize]);
-	if(!mediapipe::LibMP::WriteOutputImage(mp_out.get(), img_packet)){
-		std::cerr << "WriteOutputImage failed!" << std::endl;
-		return 1;
-	}
-
-	// Write MP output image to disk
-	stbi_write_jpg("mp_output.jpg", img_width, img_height, img_channels, mp_out.get(), 100);
-	std::cout << "Wrote MP output image to disk" << std::endl;
-
-	// ----- End ----- //
-
-	// Wait for user to press enter to end program
-	std::string s;
-	std::cout << "Press enter to continue... ";
-	std::getline(std::cin, s);
-
-	return 0;
+	cv::destroyAllWindows();
+	return EXIT_SUCCESS;
 }
